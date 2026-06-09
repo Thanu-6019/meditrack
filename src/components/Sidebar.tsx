@@ -7,6 +7,7 @@ const mainNav = [
   { href: "/dashboard",       icon: "⊞", label: "Dashboard" },
   { href: "/medicines",       icon: "💊", label: "Medicines",   badge: 1 },
   { href: "/health-metrics",  icon: "📊", label: "Health Metrics" },
+  { href: "/ai-assistant",    icon: "✦", label: "AI Assistant" },
   { href: "/scanner",         icon: "⬡", label: "Scanner" },
   { href: "/notifications",   icon: "🔔", label: "Notifications", badge: 3 },
 ];
@@ -91,3 +92,8 @@ export default function Sidebar() {
     </aside>
   );
 }
+
+
+
+
+
