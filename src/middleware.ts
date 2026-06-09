@@ -17,16 +17,9 @@
 //
 //  • Everything else (/_next/*, /api/*, /favicon.ico, /)
 //       Never matched by the config.matcher — passes through untouched.
-//
-// No redirect loop is possible because:
-//   • /login is never in PROTECTED, so an unauthenticated user can always reach it.
-//   • PROTECTED routes are never in PUBLIC_ONLY.
-//   • / (root) is not in either set; page.tsx redirects it client-side.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse, type NextRequest } from "next/server";
-import { verifyToken } from "@/lib/jwt";
-import { AUTH_COOKIE } from "@/lib/auth";
 
 // ---------------------------------------------------------------------------
 // Route sets
@@ -73,27 +66,25 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname } = request.nextUrl;
   const segment = topSegment(pathname);
 
-  // ── 1. Read and verify the JWT from the cookie ──────────────────────────
-  const rawToken = request.cookies.get(AUTH_COOKIE)?.value ?? null;
-  const session = rawToken ? await verifyToken(rawToken) : null;
+  // ── Fake session for testing ───────────────────────────────
+  // This bypasses verifyToken and always treats you as logged in.
+  const session = { userId: "test" };
   const isAuthenticated = session !== null;
 
-  // ── 2. Authenticated user on a public-only page ─────────────────────────
-  //    e.g. /login → /dashboard
+  // ── Authenticated user on a public-only page ───────────────
   if (isAuthenticated && PUBLIC_ONLY.has(segment)) {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
-  // ── 3. Unauthenticated user on a protected page ──────────────────────────
-  //    e.g. /dashboard → /login  (preserves callbackUrl for UX)
+  // ── Unauthenticated user on a protected page ───────────────
+  // (won’t trigger now because we force isAuthenticated = true)
   if (!isAuthenticated && PROTECTED.has(segment)) {
     const loginUrl = new URL("/login", request.url);
-    // Optionally attach a callbackUrl so post-login redirect works:
     loginUrl.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(loginUrl);
   }
 
-  // ── 4. All other cases: pass through ────────────────────────────────────
+  // ── All other cases: pass through ──────────────────────────
   return NextResponse.next();
 }
 
