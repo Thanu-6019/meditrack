@@ -1,19 +1,18 @@
-import type { Metadata } from "next";
-import "./globals.css";
 
-export const metadata: Metadata = {
-  title: { default: "MediTrack", template: "%s · MediTrack" },
-  description: "Premium healthcare management — medications, metrics, and appointments in one place.",
-};
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+import Sidebar from "@/components/Sidebar";
+
+export default function ProtectedLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html lang="en">
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-      </head>
-      <body>{children}</body>
-    </html>
+    <div className="app-shell">
+      <Sidebar />
+      <div className="app-main">
+        {children}
+      </div>
+    </div>
   );
 }

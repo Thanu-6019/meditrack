@@ -1,12 +1,60 @@
-import type { Metadata } from "next";
+"use client";
+// src/app/(auth)/login/page.tsx
+// Must be a Client Component so we can handle form state and call the API.
+
+import { useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 
-export const metadata: Metadata = { title: "Sign In" };
-
 export default function LoginPage() {
+  const router = useRouter();
+
+  const [email,    setEmail]    = useState("alex.johnson@email.com");
+  const [password, setPassword] = useState("password123");
+  const [remember, setRemember] = useState(true);
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
+
+  // ── Submit handler ──────────────────────────────────────────────────────────
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/auth/login", {
+        method:      "POST",
+        credentials: "include",           // ensure the Set-Cookie header is honoured
+        headers:     { "Content-Type": "application/json" },
+        body:        JSON.stringify({ email: email.trim(), password }),
+      });
+
+      const data = (await res.json()) as {
+        success: boolean;
+        data?:   { id: string; email: string };
+        error?:  { message: string; code: string };
+      };
+
+      if (!res.ok || !data.success) {
+        setError(data.error?.message ?? "Login failed. Please try again.");
+        return;
+      }
+
+      // Cookie is now set by the API response.
+      // Push to dashboard — middleware will verify the token on every subsequent request.
+      router.push("/dashboard");
+      // router.refresh() is not needed: the push causes a full navigation.
+    } catch {
+      setError("Network error. Please check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── UI ─────────────────────────────────────────────────────────────────────
   return (
     <div className="auth-shell">
-      {/* ── Left panel ─────────────────────────────────────────── */}
+      {/* ── Left panel ─────────────────────────────────────────────────────── */}
       <div className="auth-panel">
         <div style={{ position: "relative", zIndex: 1 }}>
           {/* Logo */}
@@ -37,9 +85,9 @@ export default function LoginPage() {
         <div style={{ position: "relative", zIndex: 1 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 20, marginBottom: 28 }}>
             {[
-              { v: "98%",  l: "Adherence"  },
-              { v: "4.9★", l: "Rating"     },
-              { v: "50k+", l: "Patients"   },
+              { v: "98%",  l: "Adherence" },
+              { v: "4.9★", l: "Rating"    },
+              { v: "50k+", l: "Patients"  },
             ].map(s => (
               <div key={s.l}>
                 <div style={{ fontFamily: "var(--font-display)", fontSize: 28, color: "white", letterSpacing: "-.02em" }}>{s.v}</div>
@@ -70,7 +118,7 @@ export default function LoginPage() {
         </div>
       </div>
 
-      {/* ── Right form ──────────────────────────────────────────── */}
+      {/* ── Right form ─────────────────────────────────────────────────────── */}
       <div className="auth-form-side">
         <div className="auth-form-box anim-fade-up">
           <div style={{ marginBottom: 34 }}>
@@ -81,40 +129,95 @@ export default function LoginPage() {
             <p style={{ fontSize: 14, color: "var(--muted)" }}>Sign in to your MediTrack account</p>
           </div>
 
-          <form style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          {/* Error banner */}
+          {error && (
+            <div style={{
+              marginBottom: 18, padding: "12px 14px",
+              background: "var(--danger-bg)", borderRadius: "var(--r-sm)",
+              border: "1px solid var(--danger-border)",
+              fontSize: 13, color: "var(--danger)", lineHeight: 1.5,
+              display: "flex", gap: 8, alignItems: "flex-start",
+            }}>
+              <span>⚠️</span> {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
             <div className="field">
-              <label className="field-label">Email address</label>
+              <label className="field-label" htmlFor="email">Email address</label>
               <div className="input-wrap">
                 <span className="input-icon">✉</span>
-                <input type="email" className="input" defaultValue="alex.johnson@email.com" placeholder="you@example.com" />
+                <input
+                  id="email"
+                  type="email"
+                  className="input"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  required
+                  autoComplete="email"
+                  disabled={loading}
+                />
               </div>
             </div>
 
             <div className="field">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <label className="field-label">Password</label>
+                <label className="field-label" htmlFor="password">Password</label>
                 <Link href="/forgot-password" style={{ fontSize: 12.5, color: "var(--brand-600)", fontWeight: 600 }}>
                   Forgot password?
                 </Link>
               </div>
               <div className="input-wrap">
                 <span className="input-icon">🔒</span>
-                <input type="password" className="input" defaultValue="password123" placeholder="••••••••" />
+                <input
+                  id="password"
+                  type="password"
+                  className="input"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                  disabled={loading}
+                />
               </div>
             </div>
 
-            <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer",
+            <label style={{
+              display: "flex", alignItems: "center", gap: 9, cursor: "pointer",
               padding: "10px 13px", background: "var(--n-50)", borderRadius: "var(--r-sm)",
-              border: "1.5px solid var(--border)", fontSize: 13, color: "var(--n-600)" }}>
-              <input type="checkbox" defaultChecked style={{ accentColor: "var(--brand-500)" }} />
+              border: "1.5px solid var(--border)", fontSize: 13, color: "var(--n-600)",
+            }}>
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={e => setRemember(e.target.checked)}
+                style={{ accentColor: "var(--brand-500)" }}
+                disabled={loading}
+              />
               Keep me signed in for 30 days
             </label>
 
-            <Link href="/dashboard">
-              <button type="button" className="btn btn-primary btn-lg" style={{ width: "100%" }}>
-                Sign in to MediTrack
-              </button>
-            </Link>
+            <button
+              type="submit"
+              className="btn btn-primary btn-lg"
+              style={{ width: "100%", position: "relative" }}
+              disabled={loading}
+            >
+              {loading ? (
+                <>
+                  <span style={{
+                    display: "inline-block", width: 16, height: 16,
+                    border: "2px solid rgba(255,255,255,.4)",
+                    borderTopColor: "white",
+                    borderRadius: "50%",
+                    animation: "spin 0.7s linear infinite",
+                  }} />
+                  Signing in…
+                </>
+              ) : "Sign in to MediTrack"}
+            </button>
           </form>
 
           {/* Divider */}
@@ -126,7 +229,7 @@ export default function LoginPage() {
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {[["🍎", "Apple"], ["🔵", "Google"]].map(([icon, name]) => (
-              <button key={name} className="btn btn-secondary" style={{ justifyContent: "center" }}>
+              <button key={name} className="btn btn-secondary" style={{ justifyContent: "center" }} type="button">
                 {icon} {name}
               </button>
             ))}
