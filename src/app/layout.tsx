@@ -43,15 +43,6 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/*
-          Google Fonts — preconnect first for performance, then the stylesheet.
-          Instrument Serif → --font-display (headings, logo)
-          Plus Jakarta Sans → --font-body (all body text, UI elements)
-
-          The `display=swap` parameter ensures text remains visible during font
-          load (uses system fallback until the web font arrives), preventing the
-          invisible-text flash that can affect Lighthouse CLS scores.
-        */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
           rel="preconnect"

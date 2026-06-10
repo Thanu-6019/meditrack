@@ -1,123 +1,205 @@
-// src/middleware.ts
+// src/middleware.ts  (must live at project root — next to /app)
 // ─────────────────────────────────────────────────────────────────────────────
-// Next.js 15 App Router middleware — Edge runtime.
-//
-// CHANGE from previous version:
-//   "/dashboard" is now in PROTECTED_ROUTES (previously commented out).
-//   It was commented out as a workaround while the login flow was broken.
-//   Now that the login API sets a real cookie, ALL protected routes work.
+// Next.js Edge Middleware — runs BEFORE every matched request.
 //
 // ROUTE TABLE
-// ───────────
-//  Pathname               Auth state        Action
-//  ─────────────────────────────────────────────────────────────────────────
-//  /                      authenticated     redirect → /dashboard
-//  /                      unauthenticated   redirect → /login
-//  /login  (PUBLIC_ONLY)  authenticated     redirect → /dashboard
-//  /login  (PUBLIC_ONLY)  unauthenticated   pass through
-//  /dashboard (PROTECTED) authenticated     pass through
-//  /dashboard (PROTECTED) unauthenticated   redirect → /login?callbackUrl=…
-//  any other protected    authenticated     pass through
-//  any other protected    unauthenticated   redirect → /login?callbackUrl=…
-//  anything else          either            pass through
+// ──────────────────────────────────────────────────────────────────────────
+//  Type            Path prefix              No token      Expired/invalid
+//  ─────────────── ─────────────────────── ──────────────────────────────────
+//  PUBLIC_ONLY     /login /register etc.   pass through  pass through
+//  API_PROTECTED   /api/medicines etc.     401 JSON      401 JSON
+//  PAGE_PROTECTED  /dashboard etc.         → /login      → /login
+//  PUBLIC_API      /api/auth/*             pass through  pass through
+//  EVERYTHING_ELSE anything else           pass through  pass through
+//
+// WHAT MIDDLEWARE DOES NOT DO:
+//   ✗ DB calls (no Mongoose here — Edge Runtime)
+//   ✗ bcrypt comparisons
+//   ✗ Full user hydration
+//
+// It only verifies the JWT signature and injects identity headers.
+// Route Handlers do the full DB fetch when they need it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse, type NextRequest } from "next/server";
-import { verifyToken } from "@/lib/jwt";
+import { verifyMiddlewareToken, buildAuthHeaders } from "./src/middleware/auth";
 
-// ---------------------------------------------------------------------------
-// Route classification
-// ---------------------------------------------------------------------------
+// ─── Route classification ─────────────────────────────────────────────────────
 
 /**
- * Routes where an authenticated user should NOT stay.
- * Unauthenticated users pass through freely.
+ * API routes that require a valid access token.
+ * Matched by prefix — /api/medicines/123 is covered by "/api/medicines".
  */
-const PUBLIC_ONLY_ROUTES = new Set([
-  "/login",
-  "/register",
-  "/forgot-password",
-]);
+const PROTECTED_API_PREFIXES: string[] = [
+  "/api/medicines",
+  "/api/health-metrics",
+  "/api/notifications",
+  "/api/profile",
+  "/api/dashboard",
+];
 
 /**
- * Routes that require a valid session.
- * Matched by the top-level path segment, so /dashboard/anything is also protected.
+ * Frontend page routes that require authentication.
+ * An unauthenticated visit redirects to /login?callbackUrl=<original>.
  */
-const PROTECTED_ROUTES = new Set([
-  "/dashboard",       // ← restored (was incorrectly commented out)
+const PROTECTED_PAGE_PREFIXES: string[] = [
+  "/dashboard",
   "/medicines",
   "/health-metrics",
   "/scanner",
-  "/reports",
   "/notifications",
   "/profile",
   "/settings",
   "/appointments",
+  "/reports",
   "/ai-assistant",
-]);
+];
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+/**
+ * Auth routes the user should NOT reach while already logged in.
+ * (Logged-in user visiting /login → redirect to /dashboard.)
+ */
+const PUBLIC_ONLY_ROUTES: string[] = [
+  "/login",
+  "/register",
+  "/forgot-password",
+];
 
-/** Extracts the top-level path segment: "/dashboard/overview" → "/dashboard" */
-function topSegment(pathname: string): string {
-  const first = pathname.split("/").filter(Boolean)[0];
-  return first ? `/${first}` : "/";
+// ─── Route classifier helpers ──────────────────────────────────────────────────
+
+function isProtectedApi(pathname: string): boolean {
+  return PROTECTED_API_PREFIXES.some((p) => pathname.startsWith(p));
 }
 
-/** Reads and verifies the auth cookie. Returns payload or null — never throws. */
-async function getSession(request: NextRequest) {
-  const token = request.cookies.get("token")?.value;
-  return verifyToken(token);
+function isProtectedPage(pathname: string): boolean {
+  return PROTECTED_PAGE_PREFIXES.some((p) =>
+    pathname === p || pathname.startsWith(`${p}/`)
+  );
 }
 
-// ---------------------------------------------------------------------------
-// Middleware
-// ---------------------------------------------------------------------------
+function isPublicOnly(pathname: string): boolean {
+  return PUBLIC_ONLY_ROUTES.some((p) =>
+    pathname === p || pathname.startsWith(`${p}/`)
+  );
+}
+
+function isApiRequest(pathname: string): boolean {
+  return pathname.startsWith("/api/");
+}
+
+// ─── Standard responses ───────────────────────────────────────────────────────
+
+function unauthorizedApiResponse(message: string, code: string): NextResponse {
+  return NextResponse.json(
+    { success: false, error: { message, code } },
+    {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    }
+  );
+}
+
+function redirectToLogin(request: NextRequest, reason?: string): NextResponse {
+  const loginUrl = new URL("/login", request.url);
+  loginUrl.searchParams.set("callbackUrl", request.nextUrl.pathname);
+  if (reason) loginUrl.searchParams.set("reason", reason);
+  return NextResponse.redirect(loginUrl);
+}
+
+function redirectToDashboard(request: NextRequest): NextResponse {
+  return NextResponse.redirect(new URL("/dashboard", request.url));
+}
+
+// ─── Middleware ────────────────────────────────────────────────────────────────
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname } = request.nextUrl;
-  const segment      = topSegment(pathname);
 
-  // Resolve auth state once per request
-  const session         = await getSession(request);
-  const isAuthenticated = session !== null;
+  // ── 0. Always allow Next.js internals and static assets ──────────────────
+  // (The matcher below already filters most of these, but be explicit.)
+  if (
+    pathname.startsWith("/_next/") ||
+    pathname.startsWith("/favicon") ||
+    pathname.match(/\.(ico|png|jpg|jpeg|svg|css|js|woff2?)$/)
+  ) {
+    return NextResponse.next();
+  }
 
-  // ── 1. Root path ──────────────────────────────────────────────────────────
+  // ── 1. Verify token (non-blocking — token may simply be absent) ───────────
+  const auth = await verifyMiddlewareToken(request);
+
+  // ── 2. Root path redirect ─────────────────────────────────────────────────
   if (pathname === "/") {
-    return NextResponse.redirect(
-      new URL(isAuthenticated ? "/dashboard" : "/login", request.url)
-    );
+    return auth.valid
+      ? redirectToDashboard(request)
+      : NextResponse.redirect(new URL("/login", request.url));
   }
 
-  // ── 2. Auth-only pages (PUBLIC_ONLY) ─────────────────────────────────────
-  if (PUBLIC_ONLY_ROUTES.has(segment)) {
-    if (isAuthenticated) {
-      return NextResponse.redirect(new URL("/dashboard", request.url));
+  // ── 3. Public-only routes (login / register) ──────────────────────────────
+  if (isPublicOnly(pathname)) {
+    if (auth.valid) {
+      // Already logged in — send to dashboard
+      return redirectToDashboard(request);
     }
     return NextResponse.next();
   }
 
-  // ── 3. Protected pages ────────────────────────────────────────────────────
-  if (PROTECTED_ROUTES.has(segment)) {
-    if (!isAuthenticated) {
-      const loginUrl = new URL("/login", request.url);
-      loginUrl.searchParams.set("callbackUrl", pathname);
-      return NextResponse.redirect(loginUrl);
+  // ── 4. Protected API routes ───────────────────────────────────────────────
+  if (isProtectedApi(pathname)) {
+    if (!auth.valid) {
+      const message =
+        auth.reason === "expired"
+          ? "Access token expired — call /api/auth/refresh"
+          : "Authentication required";
+      const code =
+        auth.reason === "expired" ? "TOKEN_EXPIRED" : "UNAUTHORIZED";
+      return unauthorizedApiResponse(message, code);
     }
-    return NextResponse.next();
+
+    // Inject identity headers so Route Handlers don't re-verify the token
+    const requestHeaders = new Headers(request.headers);
+    const authHeaders = buildAuthHeaders(auth.payload);
+    Object.entries(authHeaders).forEach(([key, value]) => {
+      requestHeaders.set(key, value);
+    });
+
+    return NextResponse.next({ request: { headers: requestHeaders } });
   }
 
-  // ── 4. Everything else passes through ─────────────────────────────────────
+  // ── 5. Protected page routes ──────────────────────────────────────────────
+  if (isProtectedPage(pathname)) {
+    if (!auth.valid) {
+      const reason = auth.reason === "expired" ? "session_expired" : undefined;
+      return redirectToLogin(request, reason);
+    }
+
+    // Inject headers for Server Components that need user identity
+    const requestHeaders = new Headers(request.headers);
+    const authHeaders = buildAuthHeaders(auth.payload);
+    Object.entries(authHeaders).forEach(([key, value]) => {
+      requestHeaders.set(key, value);
+    });
+
+    return NextResponse.next({ request: { headers: requestHeaders } });
+  }
+
+  // ── 6. Everything else — pass through ────────────────────────────────────
   return NextResponse.next();
 }
 
-// ---------------------------------------------------------------------------
-// Matcher — keeps middleware away from static assets and API routes
-// ---------------------------------------------------------------------------
+// ─── Matcher ──────────────────────────────────────────────────────────────────
+// Excludes static files and Next.js internals from middleware processing.
+// This is a performance optimisation — middleware only runs where it's needed.
+
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|api/|.*\\..*).*)",
+    /*
+     * Match all request paths EXCEPT:
+     *   - _next/static  (static files)
+     *   - _next/image   (image optimisation)
+     *   - favicon.ico
+     *   - public folder files (images, fonts, etc.)
+     */
+    "/((?!_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|woff|woff2|ttf|eot)$).*)",
   ],
 };

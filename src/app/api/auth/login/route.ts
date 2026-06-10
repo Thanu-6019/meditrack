@@ -2,114 +2,121 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/auth/login
 //
-// Architecture note — MongoDB swap guide:
-//   1. Delete (or comment out) the FAKE_USER block below.
-//   2. Uncomment the real lookup section that calls findUserByCredentials().
-//   3. No other changes are required in this file, middleware, or jwt.ts.
+// Body: { email, password }
 //
-// The function signature of findUserByCredentials() is defined in the comment
-// below so you can implement it against any database.
+// Flow:
+//  1. Validate input
+//  2. Find user by email (with password selected back in)
+//  3. Compare password
+//  4. Update lastLogin timestamp
+//  5. Issue JWT cookies
+//  6. Return sanitised user object
+//
+// SECURITY NOTE:
+//   We return the SAME error message for "email not found" and "wrong password"
+//   to prevent user enumeration attacks (attacker cannot tell which accounts exist).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextRequest, NextResponse } from "next/server";
-import { setAuthCookie } from "@/lib/auth";
+import connectDB from "@/lib/mongodb";
+import User from "@/models/User";
+import {
+  comparePassword,
+  setAuthCookies,
+  badRequestResponse,
+  serverErrorResponse,
+} from "@/lib/auth";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Input validation ─────────────────────────────────────────────────────────
 
-/**
- * The minimal shape that this handler needs from a user record.
- * Your Mongoose User document can have many more fields — only these
- * are required here.
- */
-interface UserRecord {
-  _id: string;
-  email: string;
-  // Add fullName, role, etc. here if you want them in the JWT later.
+interface LoginBody {
+  email:    string;
+  password: string;
 }
 
-// ─── Fake user lookup (TEMPORARY) ────────────────────────────────────────────
-// Replace this entire section with a real DB call when MongoDB is ready.
-// The function contract: accepts email + password, returns UserRecord or null.
-
-async function findUserByCredentials(
-  email: string,
-  _password: string            // prefixed with _ to silence the unused-var lint rule
-): Promise<UserRecord | null> {
-  // ── TEMPORARY ─────────────────────────────────────────────────────────────
-  // Accepts any email / password and returns a fake user.
-  // This lets you test the full auth flow without a database.
-  //
-  // ── TO ADD MONGODB ────────────────────────────────────────────────────────
-  // 1. import { connectDB } from "@/lib/db";
-  // 2. import User from "@/models/User";
-  // 3. import bcrypt from "bcryptjs";
-  //
-  // const db = await connectDB();
-  // const user = await User.findOne({ email }).select("+passwordHash").lean();
-  // if (!user) return null;
-  // const valid = await bcrypt.compare(_password, user.passwordHash);
-  // if (!valid) return null;
-  // return { _id: user._id.toString(), email: user.email };
-  // ──────────────────────────────────────────────────────────────────────────
-
-  if (!email) return null;
-
-  return {
-    _id: "fake-user-id-123",
-    email: email,               // echo back whatever email was sent
-  };
+function validateLoginInput(body: Partial<LoginBody>): string | null {
+  if (!body.email?.trim())  return "Email is required";
+  if (!body.password)       return "Password is required";
+  return null;
 }
+
+// Unified error to prevent user enumeration
+const INVALID_CREDENTIALS_RESPONSE = NextResponse.json(
+  {
+    success: false,
+    error: {
+      message: "Invalid email or password",
+      code:    "INVALID_CREDENTIALS",
+    },
+  },
+  { status: 401 }
+);
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  // 1. Parse the request body
-  let email: string;
-  let password: string;
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  // 1. Parse body
+  let body: Partial<LoginBody>;
+  try {
+    body = (await request.json()) as Partial<LoginBody>;
+  } catch {
+    return badRequestResponse("Invalid JSON body");
+  }
+
+  // 2. Validate input
+  const validationError = validateLoginInput(body);
+  if (validationError) {
+    return badRequestResponse(validationError, "VALIDATION_ERROR");
+  }
+
+  const email    = body.email!.trim().toLowerCase();
+  const password = body.password!;
 
   try {
-    const body = (await req.json()) as { email?: string; password?: string };
-    email    = (body.email    ?? "").trim().toLowerCase();
-    password = (body.password ?? "").trim();
-  } catch {
-    return NextResponse.json(
-      { success: false, error: { message: "Invalid request body", code: "INVALID_BODY" } },
-      { status: 400 }
-    );
+    await connectDB();
+
+    // 3. Find user — must re-add `password` since it has select:false on the schema
+    const user = await User.findOne({ email }).select("+password");
+
+    if (!user) {
+      // Consistent timing — run bcrypt even on missing user to prevent
+      // timing-based enumeration (attacker can't tell no-user vs wrong-password)
+      await comparePassword(password, "$2b$12$placeholderHashToPreventTimingAttack");
+      return INVALID_CREDENTIALS_RESPONSE;
+    }
+
+    // 4. Compare password
+    const passwordValid = await comparePassword(password, user.password);
+    if (!passwordValid) {
+      return INVALID_CREDENTIALS_RESPONSE;
+    }
+
+    // 5. Update last login timestamp (non-blocking — don't await on hot path)
+    User.findByIdAndUpdate(user._id, { lastLogin: new Date() }).exec().catch(() => {
+      // Non-critical — log but don't fail the login
+      console.warn("[login] Failed to update lastLogin for user:", user._id);
+    });
+
+    // 6. Build sanitised response
+    const safeUser = {
+      id:        user._id.toString(),
+      name:      user.name,
+      email:     user.email,
+      lastLogin: user.lastLogin,
+      createdAt: user.createdAt,
+    };
+
+    const response = NextResponse.json({
+      success: true,
+      message: "Login successful",
+      data:    { user: safeUser },
+    });
+
+    setAuthCookies(response, safeUser.id, safeUser.email);
+
+    return response;
+  } catch (err) {
+    console.error("[POST /api/auth/login]", err);
+    return serverErrorResponse();
   }
-
-  // 2. Basic field validation
-  if (!email || !password) {
-    return NextResponse.json(
-      { success: false, error: { message: "Email and password are required", code: "MISSING_FIELDS" } },
-      { status: 400 }
-    );
-  }
-
-  // 3. Look up the user (fake now, real DB later — same call site)
-  const user = await findUserByCredentials(email, password);
-
-  if (!user) {
-    // Use a generic message to avoid user enumeration
-    return NextResponse.json(
-      { success: false, error: { message: "Invalid email or password", code: "INVALID_CREDENTIALS" } },
-      { status: 401 }
-    );
-  }
-
-  // 4. Issue JWT cookie
-  const response = NextResponse.json({
-    success: true,
-    data: {
-      id:    user._id,
-      email: user.email,
-    },
-  });
-
-  await setAuthCookie(response, {
-    userId: user._id,
-    email:  user.email,
-  });
-
-  return response;
 }
