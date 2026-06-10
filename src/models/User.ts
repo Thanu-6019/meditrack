@@ -130,12 +130,15 @@ const UserSchema = new Schema<IUser>(
     },
   },
   {
-    timestamps: true, // auto-manages createdAt + updatedAt
+timestamps: true, // auto-manages createdAt + updatedAt
 toJSON: {
-  transform(doc, ret) {
-    const { password, refreshToken, __v, ...cleaned } = ret;
-    return cleaned;
-  }
+  // Strip sensitive fields whenever .toJSON() is called (e.g. res.json())
+  transform(_doc, ret: any) { // <-- Adding ': any' stops TypeScript from checking model types
+    delete ret.password;
+    delete ret.refreshToken;
+    delete ret.__v;
+    return ret;
+  },
 },
   }
 );

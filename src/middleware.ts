@@ -22,7 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse, type NextRequest } from "next/server";
-import { verifyMiddlewareToken, buildAuthHeaders } from "./src/middleware/auth";
+import { verifyMiddlewareToken, buildAuthHeaders } from "./middleware/auth";
 
 // ─── Route classification ─────────────────────────────────────────────────────
 
